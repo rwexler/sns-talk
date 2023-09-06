@@ -5,6 +5,7 @@ from typing import List, Tuple
 import imageio
 import numpy as np
 from matplotlib.pylab import plt
+import seaborn as sns
 
 # Initialize the random number generator
 rng = np.random.default_rng(742022)
@@ -74,48 +75,37 @@ def update_walker(walkers: np.ndarray, energies: List[float], a: float) -> Tuple
     return walkers, energies
 
 
-def plot_walkers(nrows: int, ncols: int, walkers: np.ndarray, energies: List[float], a: float, iteration: int,
-                 red: bool = True) -> None:
-    fig, ax = plt.subplots(nrows=nrows, ncols=ncols, figsize=(5.67, 4.76))
-    max_energy = max(energies)
+def plot_walkers(
+        nrows: int,
+        ncols: int,
+        figsize: Tuple[float, float],
+        walkers: np.ndarray,
+        a: float,
+        energies: List[float] = None,
+):
+    fig, axs = plt.subplots(nrows, ncols, figsize=figsize)
+    for i, ax in enumerate(axs.flat):
+        sns.scatterplot(x=walkers[i, :, 0], y=walkers[i, :, 1], ax=ax)
 
-    # Define colors for the walkers using a colorblind-friendly palette
-    max_energy_color = "#e41a1c"  # red
-    other_walkers_color = "#377eb8"  # blue
+        # Set the axis limits
+        ax.set_xlim(0, a)
+        ax.set_ylim(0, a)
 
-    for i, walker in enumerate(walkers):
-        row, col = divmod(i, ncols)
+        # Set equal aspect ratio
+        ax.set_aspect("equal", "box")
 
-        # Use different colors for max energy walker and others
-        color = max_energy_color if energies[i] == max_energy else other_walkers_color
-        ax[row, col].scatter(walker[:, 0], walker[:, 1], c=color, edgecolors='grey', linewidth=0.5,
-                             s=80)  # Increased size for visibility
+        # Remove the axis labels
+        ax.set_xticks([])
+        ax.set_yticks([])
 
-        # Update the title format with a more readable font size
-        ax[row, col].set_title(f"$E_{{\mathrm{{pot}}}} = {energies[i]:.2f}$", fontsize=12, pad=15)
-        ax[row, col].set_aspect('equal')
-
-        # Add gridlines with minor ticks (reduced linewidth for less obtrusive gridlines)
-        ax[row, col].grid(True, which='both', linestyle='--', linewidth=0.3, alpha=0.7)
-        ax[row, col].minorticks_on()
-        ax[row, col].grid(which='minor', linestyle=':', linewidth=0.15, alpha=0.5)
-
-        # Remove x and y labels and tick labels
-        ax[row, col].set_xticks([])
-        ax[row, col].set_yticks([])
-        ax[row, col].set_xticklabels([])
-        ax[row, col].set_yticklabels([])
-
-    # Set x and y axis limits and ensure all subplots share the same axes
-    for i in range(nrows):
-        for j in range(ncols):
-            ax[i, j].set_xlim(0, a)
-            ax[i, j].set_ylim(0, a)
+        # Add the energy as a title
+        if energies is not None:
+            ax.set_title(f"$E = {energies[i]:.2f}$")
 
     plt.tight_layout()
     if not os.path.exists(IMAGE_DIR):
         os.makedirs(IMAGE_DIR)
-    plt.savefig(os.path.join(IMAGE_DIR, WALKER_IMG_TEMPLATE.format(iteration)), dpi=300, bbox_inches="tight")
+    plt.savefig(os.path.join(IMAGE_DIR, WALKER_IMG_TEMPLATE.format(1)), dpi=300)
 
 
 def main():
@@ -124,11 +114,16 @@ def main():
     walkers = rng.random((nwalkers, N, 2)) * a
     energies = [potential_energy(walker) for walker in walkers]
 
-    plot_walkers(nrows, ncols, walkers, energies, a, iteration=0)
+    plot_walkers(nrows, ncols, (5.67, 4.76), walkers, a, energies)
+    sys.exit()
+
+    nrows, ncols, N, a = 5, 5, 25, 10
+    nwalkers = nrows * ncols
+    walkers = rng.random((nwalkers, N, 2)) * a
+    energies = [potential_energy(walker) for walker in walkers]
 
     walkers, energies = update_walker(walkers, energies, a)
     plot_walkers(nrows, ncols, walkers, energies, a, iteration=1, red=False)
-    sys.exit()
 
     nsteps, energy_limit = 5000, []
     for i in range(nsteps):
