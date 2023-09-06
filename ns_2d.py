@@ -1,178 +1,155 @@
-""" NVT nested sampling for a 2D LJ cluster """
-from copy import deepcopy
+import os
+import sys
+from typing import List, Tuple
 
 import imageio
 import numpy as np
 from matplotlib.pylab import plt
 
+# Initialize the random number generator
 rng = np.random.default_rng(742022)
 
+# Constants
+IMAGE_DIR = './images'
+GIF_NAME = 'walkers.gif'
+ENERGY_LIMIT_NAME = 'energy_limit.png'
+WALKER_IMG_TEMPLATE = 'walkers_{}.png'
+NUM_RANDOM_STEPS = 1600
+ENERGY_PLOT_INTERVAL = 100
+GIF_DURATION = 0.5
+ENERGY_Y_LIM = (-4.5, 1.5)
+ADJUSTMENT_INTERVAL = 100
+STEP_SIZE_INCREASE_FACTOR = 1.1
+STEP_SIZE_DECREASE_FACTOR = 0.9
+INITIAL_STEP_SIZE = 0.1
+MIN_ACCEPTANCE_RATIO = 0.25
+MAX_ACCEPTANCE_RATIO = 0.75
 
-def potential_energy(walker, cutoff=2.5):
-    """ Calculate the potential energy of a walker where its particles interact through a LJ potential """
-    # Get the number of particles
-    N = walker.shape[0]
 
-    # Calculate the distances between all particles
+def potential_energy(walker: np.ndarray, cutoff: float = 2.5) -> float:
     distances = np.linalg.norm(walker[:, None, :] - walker[None, :, :], axis=-1)
-
-    # Calculate the potential energy
-    energy = 0
-    for i in range(N):
-        for j in range(i + 1, N):
-            if distances[i, j] < cutoff:
-                energy += 4 * (distances[i, j] ** -12 - distances[i, j] ** -6)
-
-    return energy
+    energy_contributions = np.where(
+        distances < cutoff,
+        4 * (distances ** -12 - distances ** -6),
+        0
+    )
+    return np.sum(np.triu(energy_contributions, k=1))
 
 
-def plot_walkers(nrows, ncols, walkers, energies, a, name, red=True, figsize=(5.67, 4.76)):
-    """
-    Plot the walkers
-    """
-    fig, ax = plt.subplots(nrows=nrows, ncols=ncols, figsize=figsize, sharex=True, sharey=True)
-
-    # Plot the walkers
-    for i in range(nrows):
-        for j in range(ncols):
-            ax[i, j].plot(walkers[i * ncols + j, :, 0], walkers[i * ncols + j, :, 1], 'o')
-
-            # Set the title of the subplot to the potential energy in scientific notation
-            ax[i, j].set_title(f"{energies[i * ncols + j]:.2e}")
-
-            if red:
-                # Color the highest energy walker red
-                if energies[i * ncols + j] == max(energies):
-                    ax[i, j].plot(walkers[i * ncols + j, :, 0], walkers[i * ncols + j, :, 1], 'ro')
-
-    # Remove the x and y ticks from all subplots
-    ax[-1, 0].set_xticks([])
-    ax[-1, 0].set_yticks([])
-
-    # Make sure all subplots have the same x and y limits
-    ax[-1, 0].set_xlim(0, a)
-    ax[-1, 0].set_ylim(0, a)
-
-    # Make sure all subplots render as squares
-    for i in range(nrows):
-        for j in range(ncols):
-            ax[i, j].set_aspect('equal')
-
-    # Add energy of the highest energy walker
-    # and the iteration number
-    # to the figure as a title
-    fig.suptitle(f"Energy: {max(energies):.2e} | Iteration: {name[8:-4]}")
-
-    plt.tight_layout()
-    plt.savefig(name, dpi=300)
-    pass
-
-
-def perform_random_walk(walker, a, nsteps=1600):
-    """ Perform a random walk on a walker for nsteps """
-    # Get the number of particles
-    N = walker.shape[0]
-
-    # Perform a random walk on the new walker for 1600 steps
+def perform_random_walk(walker: np.ndarray, a: float, nsteps: int = NUM_RANDOM_STEPS,
+                        step_size: float = INITIAL_STEP_SIZE) -> np.ndarray:
+    accepted_moves = 0
     for i in range(nsteps):
-        # Pick a random particle
-        particle = rng.integers(0, N)
+        old_energy = potential_energy(walker)
+        particle = rng.integers(0, walker.shape[0])
+        move = rng.normal(0, step_size, size=2)
+        proposed_walker = walker.copy()
+        proposed_walker[particle] = (proposed_walker[particle] + move) % a
+        new_energy = potential_energy(proposed_walker)
 
-        # Generate a random move
-        move = rng.normal(0, 0.1, size=2)
+        # If the move decreases the potential energy, accept the move
+        if new_energy < old_energy:
+            walker = proposed_walker
+            accepted_moves += 1
 
-        # Given the shape of a walker is (N, 2), the first index is the particle and the second index is the x or y
-        # Apply periodic boundary conditions along the x-axis and y-axis
-        if walker[particle, 0] + move[0] < 0 or walker[particle, 0] + move[0] > a:
-            move[0] *= -1
-        if walker[particle, 1] + move[1] < 0 or walker[particle, 1] + move[1] > a:
-            move[1] *= -1
-
-        # Update the walker
-        walker[particle] += move
+        # Adjust step size at regular intervals
+        if (i + 1) % ADJUSTMENT_INTERVAL == 0:
+            acceptance_ratio = accepted_moves / ADJUSTMENT_INTERVAL
+            if acceptance_ratio > MAX_ACCEPTANCE_RATIO:
+                step_size *= STEP_SIZE_INCREASE_FACTOR
+            elif acceptance_ratio < MIN_ACCEPTANCE_RATIO:
+                step_size *= STEP_SIZE_DECREASE_FACTOR
+            accepted_moves = 0  # Reset the counter for the next interval
 
     return walker
 
 
+def update_walker(walkers: np.ndarray, energies: List[float], a: float) -> Tuple[np.ndarray, List[float]]:
+    max_energy_index = np.argmax(energies)
+    old_walker = walkers[max_energy_index].copy()
+    new_walker = perform_random_walk(old_walker.copy(), a)
+    if potential_energy(new_walker) < potential_energy(old_walker):
+        walkers[max_energy_index] = new_walker
+        energies[max_energy_index] = potential_energy(new_walker)
+    return walkers, energies
+
+
+def plot_walkers(nrows: int, ncols: int, walkers: np.ndarray, energies: List[float], a: float, iteration: int,
+                 red: bool = True) -> None:
+    fig, ax = plt.subplots(nrows=nrows, ncols=ncols, figsize=(5.67, 4.76))
+    max_energy = max(energies)
+
+    # Define colors for the walkers using a colorblind-friendly palette
+    max_energy_color = "#e41a1c"  # red
+    other_walkers_color = "#377eb8"  # blue
+
+    for i, walker in enumerate(walkers):
+        row, col = divmod(i, ncols)
+
+        # Use different colors for max energy walker and others
+        color = max_energy_color if energies[i] == max_energy else other_walkers_color
+        ax[row, col].scatter(walker[:, 0], walker[:, 1], c=color, edgecolors='grey', linewidth=0.5,
+                             s=80)  # Increased size for visibility
+
+        # Update the title format with a more readable font size
+        ax[row, col].set_title(f"$E_{{\mathrm{{pot}}}} = {energies[i]:.2f}$", fontsize=12, pad=15)
+        ax[row, col].set_aspect('equal')
+
+        # Add gridlines with minor ticks (reduced linewidth for less obtrusive gridlines)
+        ax[row, col].grid(True, which='both', linestyle='--', linewidth=0.3, alpha=0.7)
+        ax[row, col].minorticks_on()
+        ax[row, col].grid(which='minor', linestyle=':', linewidth=0.15, alpha=0.5)
+
+        # Remove x and y labels and tick labels
+        ax[row, col].set_xticks([])
+        ax[row, col].set_yticks([])
+        ax[row, col].set_xticklabels([])
+        ax[row, col].set_yticklabels([])
+
+    # Set x and y axis limits and ensure all subplots share the same axes
+    for i in range(nrows):
+        for j in range(ncols):
+            ax[i, j].set_xlim(0, a)
+            ax[i, j].set_ylim(0, a)
+
+    plt.tight_layout()
+    if not os.path.exists(IMAGE_DIR):
+        os.makedirs(IMAGE_DIR)
+    plt.savefig(os.path.join(IMAGE_DIR, WALKER_IMG_TEMPLATE.format(iteration)), dpi=300, bbox_inches="tight")
+
+
 def main():
-    """ Main function """
-    # Initialize walkers
-    nrows = 3
-    ncols = 3
-    N = 5
+    nrows, ncols, N, a = 3, 3, 5, 10
     nwalkers = nrows * ncols
-    a = 10
-
-    # Generate random walkers with positions in [0, 5]
     walkers = rng.random((nwalkers, N, 2)) * a
-
-    # Calculate potential energies of the walkers
     energies = [potential_energy(walker) for walker in walkers]
 
-    # Plot the walkers
-    plot_walkers(nrows, ncols, walkers, energies, a, name="walkers_0.png")
+    plot_walkers(nrows, ncols, walkers, energies, a, iteration=0)
 
-    # Get the index of the highest energy walker
-    max_energy_index = np.argmax(energies)
-    old_walker = deepcopy(walkers[max_energy_index])
-    new_walker = deepcopy(walkers[max_energy_index])
+    walkers, energies = update_walker(walkers, energies, a)
+    plot_walkers(nrows, ncols, walkers, energies, a, iteration=1, red=False)
+    sys.exit()
 
-    # Perform a random walk on the new walker for 1600 steps
-    new_walker = perform_random_walk(new_walker, a, nsteps=1600)
-
-    # Calculate the potential energy of the new walker
-    old_energy = potential_energy(old_walker)
-    new_energy = potential_energy(new_walker)
-
-    # Update the walker if the new energy is lower
-    if new_energy < old_energy:
-        walkers[max_energy_index] = new_walker
-        energies[max_energy_index] = new_energy
-
-    # Plot the walkers
-    plot_walkers(nrows, ncols, walkers, energies, a, name="walkers_1.png", red=False)
-
-    # Perform nested sampling for 1000 steps
-    nsteps = 5000
-    energy_limit = []
+    nsteps, energy_limit = 5000, []
     for i in range(nsteps):
-        # Get the index of the highest energy walker
-        max_energy_index = np.argmax(energies)
+        walkers, energies = update_walker(walkers, energies, a)
         energy_limit.append(max(energies))
-        old_walker = deepcopy(walkers[max_energy_index])
-        new_walker = deepcopy(walkers[max_energy_index])
+        if i % ENERGY_PLOT_INTERVAL == 0:
+            plot_walkers(nrows, ncols, walkers, energies, a, iteration=i + 2, red=False)
 
-        # Perform a random walk on the new walker for 1600 steps
-        new_walker = perform_random_walk(new_walker, a, nsteps=1600)
+    images = [imageio.imread(os.path.join(IMAGE_DIR, WALKER_IMG_TEMPLATE.format(i + 2))) for i in
+              range(0, nsteps, ENERGY_PLOT_INTERVAL)]
+    imageio.mimsave(GIF_NAME, images, duration=GIF_DURATION)
 
-        # Calculate the potential energy of the new walker
-        old_energy = potential_energy(old_walker)
-        new_energy = potential_energy(new_walker)
-
-        # Update the walker if the new energy is lower
-        if new_energy < old_energy:
-            walkers[max_energy_index] = new_walker
-            energies[max_energy_index] = new_energy
-
-        # Plot the walkers every 100 steps
-        if i % 100 == 0:
-            plot_walkers(nrows, ncols, walkers, energies, a, name=f"walkers_{i + 2}.png", red=False)
-
-    # Generate a gif of the walkers
-    images = []
-    for i in range(0, nsteps, 100):
-        images.append(imageio.imread(f"walkers_{i + 2}.png"))
-    imageio.mimsave('walkers.gif', images, duration=0.5)
-
-    # Plot the energy limit
     fig, ax = plt.subplots(figsize=(5.67, 4.76))
     ax.plot(energy_limit)
     ax.set_xlabel("Iteration")
     ax.set_ylabel("Energy limit")
-    ax.set_ylim(-4.5, 1.5)
+    ax.set_ylim(*ENERGY_Y_LIM)
     plt.tight_layout()
-    plt.savefig("energy_limit.png", dpi=300)
+    plt.savefig(ENERGY_LIMIT_NAME, dpi=300)
 
 
+# Run main if the script is executed as a standalone file
 if __name__ == "__main__":
     main()
