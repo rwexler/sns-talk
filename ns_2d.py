@@ -1,91 +1,89 @@
 import os
 import sys
-from typing import List, Tuple
+import time
+from copy import deepcopy
+from typing import List
 
-import imageio
 import numpy as np
-from matplotlib.pylab import plt
 import seaborn as sns
+from matplotlib.pylab import plt
 
 # Initialize the random number generator
-rng = np.random.default_rng(742022)
+rng = np.random.default_rng(7422)
 
 # Constants
-IMAGE_DIR = './images'
-GIF_NAME = 'walkers.gif'
-ENERGY_LIMIT_NAME = 'energy_limit.png'
-WALKER_IMG_TEMPLATE = 'walkers_{}.png'
-NUM_RANDOM_STEPS = 1600
-ENERGY_PLOT_INTERVAL = 100
-GIF_DURATION = 0.5
-ENERGY_Y_LIM = (-4.5, 1.5)
-ADJUSTMENT_INTERVAL = 100
-STEP_SIZE_INCREASE_FACTOR = 1.1
-STEP_SIZE_DECREASE_FACTOR = 0.9
-INITIAL_STEP_SIZE = 0.1
-MIN_ACCEPTANCE_RATIO = 0.25
-MAX_ACCEPTANCE_RATIO = 0.75
+OUTPUT_DIR = './output'
+WALKER_IMG_TEMPLATE = 'walkers_{:03d}.png'
+WALKER_IMG_RED_TEMPLATE = 'walkers_red_{:03d}.png'
 
 
-def potential_energy(walker: np.ndarray, cutoff: float = 2.5) -> float:
-    distances = np.linalg.norm(walker[:, None, :] - walker[None, :, :], axis=-1)
-    energy_contributions = np.where(
-        distances < cutoff,
-        4 * (distances ** -12 - distances ** -6),
-        0
-    )
-    return np.sum(np.triu(energy_contributions, k=1))
+def calculate_potential_energy(positions, lattice_constant, cutoff=2.5):
+    potential_energy = 0
+    for i in range(positions.shape[0]):
+        for j in range(positions.shape[0]):
+            if i < j:
+                dx = positions[i, 0] - positions[j, 0]
+                dx = dx - np.rint(dx / lattice_constant) * lattice_constant
+                dy = positions[i, 1] - positions[j, 1]
+                dy = dy - np.rint(dy / lattice_constant) * lattice_constant
+                distance = np.sqrt(dx ** 2 + dy ** 2)
+                if distance < cutoff:
+                    potential_energy += 4 * (distance ** -12 - distance ** -6)
+    return potential_energy + rng.uniform() * 1.0e-12
 
 
-def perform_random_walk(walker: np.ndarray, a: float, nsteps: int = NUM_RANDOM_STEPS,
-                        step_size: float = INITIAL_STEP_SIZE) -> np.ndarray:
-    accepted_moves = 0
-    for i in range(nsteps):
-        old_energy = potential_energy(walker)
-        particle = rng.integers(0, walker.shape[0])
-        move = rng.normal(0, step_size, size=2)
-        proposed_walker = walker.copy()
-        proposed_walker[particle] = (proposed_walker[particle] + move) % a
-        new_energy = potential_energy(proposed_walker)
+def walk(positions, energy_limit, lattice_constant, step_size, number_of_steps):
+    number_of_accepted_steps = 0
+    for _ in range(number_of_steps):
+        i = rng.integers(positions.shape[0])
+        old_position = deepcopy(positions[i])
 
-        # If the move decreases the potential energy, accept the move
-        if new_energy < old_energy:
-            walker = proposed_walker
-            accepted_moves += 1
-
-        # Adjust step size at regular intervals
-        if (i + 1) % ADJUSTMENT_INTERVAL == 0:
-            acceptance_ratio = accepted_moves / ADJUSTMENT_INTERVAL
-            if acceptance_ratio > MAX_ACCEPTANCE_RATIO:
-                step_size *= STEP_SIZE_INCREASE_FACTOR
-            elif acceptance_ratio < MIN_ACCEPTANCE_RATIO:
-                step_size *= STEP_SIZE_DECREASE_FACTOR
-            accepted_moves = 0  # Reset the counter for the next interval
-
-    return walker
+        positions[i] += rng.uniform(-step_size, step_size, size=2)
+        positions[i] = np.mod(positions[i], lattice_constant)
+        new_energy = calculate_potential_energy(positions, lattice_constant)
+        if new_energy < energy_limit:
+            number_of_accepted_steps += 1
+        else:
+            positions[i] = old_position
+    acceptance_ratio = number_of_accepted_steps / number_of_steps
+    return positions, acceptance_ratio
 
 
-def update_walker(walkers: np.ndarray, energies: List[float], a: float) -> Tuple[np.ndarray, List[float]]:
-    max_energy_index = np.argmax(energies)
-    old_walker = walkers[max_energy_index].copy()
-    new_walker = perform_random_walk(old_walker.copy(), a)
-    if potential_energy(new_walker) < potential_energy(old_walker):
-        walkers[max_energy_index] = new_walker
-        energies[max_energy_index] = potential_energy(new_walker)
-    return walkers, energies
+def decorrelate(positions, energy_limit, lattice_constant, number_of_steps=100):
+    # Find a suitable step size
+    step_size = 0.1
+    acceptance_ratio = 0
+    while acceptance_ratio < 0.25 or acceptance_ratio > 0.75:
+        _, acceptance_ratio = walk(positions, energy_limit, lattice_constant, step_size, number_of_steps)
+        if acceptance_ratio < 0.25:
+            step_size *= 0.9
+        elif acceptance_ratio > 0.75:
+            step_size *= 1.1
+            if step_size > lattice_constant / 2:
+                step_size = lattice_constant / 2
+                break
+
+    # Decorrelate the walker
+    new_positions, _ = walk(positions, energy_limit, lattice_constant, step_size, number_of_steps)
+    new_energy = calculate_potential_energy(new_positions, lattice_constant)
+    return new_positions, new_energy
 
 
 def plot_walkers(
-        nrows: int,
-        ncols: int,
-        figsize: Tuple[float, float],
         walkers: np.ndarray,
         a: float,
         energies: List[float] = None,
+        iteration: int = 0,
+        red: bool = False,
 ):
-    fig, axs = plt.subplots(nrows, ncols, figsize=figsize)
+    nrows = int(np.sqrt(walkers.shape[0]))
+    ncols = int(np.ceil(walkers.shape[0] / nrows))
+    fig, axs = plt.subplots(nrows, ncols, figsize=(5.67, 4.76))
     for i, ax in enumerate(axs.flat):
-        sns.scatterplot(x=walkers[i, :, 0], y=walkers[i, :, 1], ax=ax)
+        if red and i == np.argmax(energies):
+            sns.scatterplot(x=walkers[i, :, 0], y=walkers[i, :, 1], ax=ax, color='red')
+        else:
+            sns.scatterplot(x=walkers[i, :, 0], y=walkers[i, :, 1], ax=ax)
 
         # Set the axis limits
         ax.set_xlim(0, a)
@@ -103,46 +101,52 @@ def plot_walkers(
             ax.set_title(f"$E = {energies[i]:.2f}$")
 
     plt.tight_layout()
-    if not os.path.exists(IMAGE_DIR):
-        os.makedirs(IMAGE_DIR)
-    plt.savefig(os.path.join(IMAGE_DIR, WALKER_IMG_TEMPLATE.format(1)), dpi=300)
+    if not os.path.exists(OUTPUT_DIR):
+        os.makedirs(OUTPUT_DIR)
+    if red:
+        plt.savefig(os.path.join(OUTPUT_DIR, WALKER_IMG_RED_TEMPLATE.format(iteration)), dpi=300)
+    else:
+        plt.savefig(os.path.join(OUTPUT_DIR, WALKER_IMG_TEMPLATE.format(iteration)), dpi=300)
+    plt.close()
 
 
 def main():
-    nrows, ncols, N, a = 3, 3, 5, 10
-    nwalkers = nrows * ncols
-    walkers = rng.random((nwalkers, N, 2)) * a
-    energies = [potential_energy(walker) for walker in walkers]
+    K = 9  # Number of walkers
+    N = 3  # Number of particles
+    a = 5  # Box size
+    rN = rng.random((K, N, 2)) * a  # Random walkers
+    E = [calculate_potential_energy(r, a) for r in rN]  # Energies of the walkers
 
-    plot_walkers(nrows, ncols, (5.67, 4.76), walkers, a, energies)
-    sys.exit()
+    # Center the walkers
+    rN -= np.mean(rN, axis=1, keepdims=True) - a / 2
 
-    nrows, ncols, N, a = 5, 5, 25, 10
-    nwalkers = nrows * ncols
-    walkers = rng.random((nwalkers, N, 2)) * a
-    energies = [potential_energy(walker) for walker in walkers]
+    # Run nested sampling
+    M = 200  # Number of steps
+    rN_lim = []  # List of walker positions
+    E_lim = []  # List of energy limits
+    plot_walkers(rN, a, E, iteration=0)
+    plot_walkers(rN, a, E, iteration=0, red=True)
+    for i in range(M):
+        initial_time = time.time()
+        i_max = np.argmax(E)
+        rN_max = deepcopy(rN[i_max])
+        E_max = E[i_max]
+        if i == 0:
+            rN_lim.append(deepcopy(rN_max))
+            E_lim.append(E_max)
+            print(f"Iteration {0:03d}: E = {max(E):.2f}")
+        rN_new, E_new = decorrelate(rN_max, E_max, a)
+        rN[i_max] = rN_new
+        E[i_max] = E_new
+        rN_lim.append(deepcopy(rN_max))
+        E_lim.append(E_max)
+        plot_walkers(rN, a, E, iteration=i + 1, red=True)
+        final_time = time.time()
+        print(f"Iteration {i + 1:03d}: E = {max(E):.2f} (took {final_time - initial_time:.2f} seconds)")
 
-    walkers, energies = update_walker(walkers, energies, a)
-    plot_walkers(nrows, ncols, walkers, energies, a, iteration=1, red=False)
-
-    nsteps, energy_limit = 5000, []
-    for i in range(nsteps):
-        walkers, energies = update_walker(walkers, energies, a)
-        energy_limit.append(max(energies))
-        if i % ENERGY_PLOT_INTERVAL == 0:
-            plot_walkers(nrows, ncols, walkers, energies, a, iteration=i + 2, red=False)
-
-    images = [imageio.imread(os.path.join(IMAGE_DIR, WALKER_IMG_TEMPLATE.format(i + 2))) for i in
-              range(0, nsteps, ENERGY_PLOT_INTERVAL)]
-    imageio.mimsave(GIF_NAME, images, duration=GIF_DURATION)
-
-    fig, ax = plt.subplots(figsize=(5.67, 4.76))
-    ax.plot(energy_limit)
-    ax.set_xlabel("Iteration")
-    ax.set_ylabel("Energy limit")
-    ax.set_ylim(*ENERGY_Y_LIM)
-    plt.tight_layout()
-    plt.savefig(ENERGY_LIMIT_NAME, dpi=300)
+    # Save rN_lim and E_lim
+    np.save("rN_lim.npy", rN_lim)
+    np.save("E_lim.npy", E_lim)
 
 
 # Run main if the script is executed as a standalone file
