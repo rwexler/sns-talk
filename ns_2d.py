@@ -1,11 +1,12 @@
 import os
-import sys
 import time
 from copy import deepcopy
 from typing import List
 
+import imageio
 import numpy as np
 import seaborn as sns
+from PIL import Image
 from matplotlib.pylab import plt
 
 # Initialize the random number generator
@@ -110,15 +111,44 @@ def plot_walkers(
     plt.close()
 
 
-def main():
+# plot lennard jones potential from 0 to 10 sigma
+def plot_lj_potential():
+    # set the figure size
+    plt.figure(figsize=(5.67, 2.9))
+
+    x = np.linspace(0.5, 3, 1000)
+    y = 4 * (x ** -12 - x ** -6)
+    plt.plot(x, y)
+    plt.xlabel(r"$r \ \left( \sigma \right)$")
+    plt.ylabel(r"$E_{LJ} \ \left( \epsilon \right)$")
+    plt.ylim(-1.5, 3.5)
+
+    # plot horizontal dashed line at 0 and -epsilon
+    plt.axhline(y=0, color='black', linestyle='--')
+    plt.axhline(y=-1, color='black', linestyle='--')
+
+    # plot vertical dashed line at the minimum of the potential and add a label
+    plt.axvline(x=2 ** (1 / 6), color='black', linestyle='--')
+    plt.text(2 ** (1 / 6) + 0.05, 3, "$r_{min}$", va="center")
+
+    # add the lennard jones potential as the title
+    plt.title(
+        r"$E_{LJ} \left( r \right) = 4 \epsilon \left[ \left( \frac{\sigma}{r} \right)^{12} - \left( \frac{\sigma}{r} \right)^{6} \right]$")
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(OUTPUT_DIR, "lj_potential.png"), dpi=300)
+    plt.close()
+
+
+def ns():
     K = 9  # Number of walkers
     N = 3  # Number of particles
     a = 5  # Box size
     rN = rng.random((K, N, 2)) * a  # Random walkers
     E = [calculate_potential_energy(r, a) for r in rN]  # Energies of the walkers
 
-    # Center the walkers
-    rN -= np.mean(rN, axis=1, keepdims=True) - a / 2
+    # Plot the Lennard-Jones potential
+    plot_lj_potential()
 
     # Run nested sampling
     M = 200  # Number of steps
@@ -149,6 +179,39 @@ def main():
     np.save("E_lim.npy", E_lim)
 
 
+# make a movie of the evolution of the walkers
+def make_movie():
+    # load every tenth image
+    images = []
+    for i in range(0, 201, 10):
+        filename = os.path.join(OUTPUT_DIR, WALKER_IMG_RED_TEMPLATE.format(i))
+        images.append(Image.open(filename))
+
+    # save the images as a gif
+    duration = 1000  # milliseconds
+    imageio.mimsave(os.path.join(OUTPUT_DIR, "walkers.gif"), images, duration=duration)
+
+
+def plot_energy():
+    # load the energy values
+    E_lim = np.load("E_lim.npy")
+
+    # plot the energy values
+    plt.figure(figsize=(5.67, 4.76))
+    plt.plot(np.log10(E_lim - min(E_lim)), color='black')
+    plt.xlabel("Iteration")
+    plt.ylabel(r"$\log_{10} \left( E - E_{min} \right)$")
+    plt.tight_layout()
+    plt.savefig(os.path.join(OUTPUT_DIR, "energy.png"), dpi=300)
+    plt.close()
+
+
 # Run main if the script is executed as a standalone file
 if __name__ == "__main__":
-    main()
+    # make a directory for the output
+    if not os.path.exists(OUTPUT_DIR):
+        os.makedirs(OUTPUT_DIR)
+
+    ns()
+    make_movie()
+    plot_energy()
